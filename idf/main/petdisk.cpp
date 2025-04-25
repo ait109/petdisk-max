@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <stdint.h>
+#include <driver/uart.h>
 #include "EspConn.h"
 #include "EspHttp.h"
 #include "IEEE488.h"
@@ -13,8 +14,16 @@
 #include "hardware.h"
 #include "githash.h"
 #include "FAT32.h"
+#include "console.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "driver/gpio.h"
 
 //#define TESTING 1
+
+static const char* TAG = "PD";
 
 // global memory buffer
 uint8_t _buffer[1024];
@@ -310,6 +319,33 @@ private:
     bool getDirectoryEntry();
 };
 
+bool petdisk_config_valid(struct pd_config* cfg) {
+    // first check if any device has been set
+    // at least one device should be set to a value other than DEVICE_NONE
+    bool device_set = false;
+    for (int i = 0; i < 9; i++) {
+        if (cfg->device_type[i] != DEVICE_NONE) {
+            device_set = true;
+            break;
+        }
+    }
+
+    if (!device_set) {
+        log_i("no devices set, not valid config");
+        return false;
+    }
+
+    // check if any devices have an invalid type
+    for (int i = 0; i < 9; i++) {
+        if (cfg->device_type[i] > DEVICE_END) {
+            log_i("device %d->%d, invalid", i, cfg->device_type[i]);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void PETdisk::init(
     bitfixer::FAT32* fat32,
     D64DataSource* d64,
@@ -366,7 +402,8 @@ void PETdisk::init(
     bool espConnected = false;
     
     // check validity of config
-    if (pdcfg->device_type[0] > DEVICE_END)
+    //if (pdcfg->device_type[0] > DEVICE_END)
+    if (!petdisk_config_valid(pdcfg))
     {
         // config not set
         // use defaults
@@ -469,12 +506,15 @@ void PETdisk::printConfig(struct pd_config* pdcfg)
     char tmp[128];
     for (int i = 0; i < 9; i++)
     {
-        sprintf_P(tmp, PSTR("d %d->%d"), i, pdcfg->device_type[i]);
+        //sprintf_P(tmp, PSTR("d %d->%d"), i, pdcfg->device_type[i]);
+        //log_is((const char*)tmp);
+        log_i("d %d->%d", i, pdcfg->device_type[i]);
     }
 
     for (int i = 0; i < 4; i++)
     {
-        sprintf_P(tmp, PSTR("u %d->"), i);
+        //sprintf_P(tmp, PSTR("u %d->"), i);
+        //log_is(tmp);
         log_i("%d: %s", i, pdcfg->urls[i]);
     }
 
@@ -1031,6 +1071,7 @@ bool PETdisk::isD64(const char* fileName)
 
 bool PETdisk::openFile(uint8_t* fileName)
 {
+    ESP_LOGI(TAG, "file %s", (char*)fileName);
     if (_dataSource->openFileForReading(fileName))
     {
         return true;
@@ -1051,6 +1092,7 @@ bool PETdisk::openFile(uint8_t* fileName)
 
 void PETdisk::loop()
 {
+    enable_interrupts();
     // start main loop
     if (_currentState == FILE_NOT_FOUND || _currentState == CLOSING)
     {
@@ -1064,8 +1106,10 @@ void PETdisk::loop()
     if (_ieee->is_unlistened())
     {
         // if we are in an unlisten state,
-        // wait for my address
+        // wait for my address     
+        bool t;
         uint8_t buscmd = get_device_address();
+        disable_interrupts();
         if (_dataSource == 0) // no datasource found
         {
             return;
@@ -1826,8 +1870,18 @@ void loopTask(void *pvParameters)
     }
 }
 
+//#define TESTMODE 1
+
 extern "C" void app_main() {
     esp_log_level_set("pd", ESP_LOG_INFO);
     gpio_init();
-    xTaskCreatePinnedToCore(loopTask, "loopTask", 4096, NULL, 1, &loopTaskHandle, 1);
+    // select between test mode and run mode
+#ifdef TESTMODE
+    Console::init();
+    hardware_cmd_init();
+    ESP_LOGI("main", "entering test mode");
+#else
+    setup_atn_interrupt();
+    xTaskCreate(loopTask, "loopTask", 4096, NULL, 24, &loopTaskHandle);
+#endif
 }
