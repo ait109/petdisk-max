@@ -1,9 +1,6 @@
 #ifndef __hardware_esp32_h__
 #define __hardware_esp32_h__
 
-//#include <Arduino.h>
-// #include <pgmspace.h>
-
 #include <stdint.h>
 #include <hal/gpio_types.h>
 #include <driver/gpio.h>
@@ -12,6 +9,9 @@
 #include <hal/gpio_hal.h>
 #include <hal/gpio_ll.h>
 #include <esp_log.h>
+#include <esp_timer.h>
+
+#include "esp-fast-gpio.h"
 
 #define LOW     0x0
 #define HIGH    0x1
@@ -25,16 +25,7 @@
 #define PROGMEM
 
 void hardware_cmd_init();
-
 void gpio_init();
-
-extern gpio_hal_context_t _gpio_hal;
-extern gpio_dev_t *dev;
-
-extern volatile uint32_t* gpio_low_set_reg;
-extern volatile uint32_t* gpio_low_clear_reg;
-extern volatile uint32_t* gpio_low_enable_set_reg;
-extern volatile uint32_t* gpio_low_enable_clear_reg;
 
 #define delay_ticks(ticks) vTaskDelay(ticks)
 
@@ -46,7 +37,9 @@ extern volatile uint32_t* gpio_low_enable_clear_reg;
 #define SCK_PIN     18
 
 #define DATA0       32
+#define DATA0_HI    0
 #define DATA1       33
+#define DATA1_HI    1
 #define DATA2       25
 #define DATA3       26
 #define DATA4       27
@@ -54,19 +47,21 @@ extern volatile uint32_t* gpio_low_enable_clear_reg;
 #define DATA6       12
 #define DATA7       13
 
+#define DATA_LOW_MASK   0xE007000
+#define DATA_HIGH_MASK  0x3
+
 #define DATADIR     15
-#define DATADIR_MASK 0b1000000000000000
 
 #define ATN_PIN     5
-#define ATN_MASK    0b00000000000000000000000000100000
 #define EOI_PIN     22
-#define EOI_MASK    0b00000000010000000000000000000000
 #define DAV_PIN     21
-#define DAV_MASK    0b00000000001000000000000000000000
 #define NRFD_PIN    17
-#define NRFD_MASK   0b00000000000000100000000000000000
 #define NDAC_PIN    16
-#define NDAC_MASK   0b00000000000000010000000000000000
+#define NDAC_MASK   0b10000000000000000
+
+extern uint32_t data_mask_low[256];
+extern uint32_t data_mask_hi[256];
+
 #else
 // esp32s2
 #define LED_PIN     15
@@ -85,151 +80,99 @@ extern volatile uint32_t* gpio_low_enable_clear_reg;
 #define DATA7       12
 
 #define DATADIR     3
-#define DATADIR_MASK 0b1000
 
 #define ATN_PIN     18
-#define ATN_MASK    0b1000000000000000000
 #define EOI_PIN     2
-#define EOI_MASK    0b100
 #define DAV_PIN     1
-#define DAV_MASK    0b10
 #define NRFD_PIN    21
-#define NRFD_MASK   0b1000000000000000000000
 #define NDAC_PIN    16
 #define NDAC_MASK   0b10000000000000000
 
 #define DATA_MASK   0b1111111100000
 
-// NOTE: old definitions
-//#define ATN_PIN     ((gpio_num_t)33)
-//#define EOI_PIN     ((gpio_num_t)2)
-//#define DAV_PIN     ((gpio_num_t)1)
-//#define NRFD_PIN    ((gpio_num_t)38)
-//#define NDAC_PIN    ((gpio_num_t)34)
-
 #endif
 
-#define setInput(pin) gpio_hal_output_disable(&_gpio_hal, (gpio_num_t)pin)
-#define setOutput(pin) gpio_hal_output_enable(&_gpio_hal, (gpio_num_t)pin)
-#define digitalWrite2(pin,val) gpio_hal_set_level(&_gpio_hal, (gpio_num_t)pin, val)
-#define digitalRead2(pin) gpio_hal_get_level(&_gpio_hal, (gpio_num_t)pin)
+#define lower_eoi()         fast_gpio_set_low(EOI_PIN)
+#define lower_dav()         fast_gpio_set_low(DAV_PIN)
+#define lower_nrfd()        fast_gpio_set_low(NRFD_PIN)
+#define lower_ndac()        fast_gpio_set_low_mask(NDAC_MASK)
 
-// note - only for GPIO < 32
-#define setInputLL(pin) dev->enable_w1tc = (1 << pin)
-#define setOutputLL(pin) dev->enable_w1ts = (1 << pin)
-#define digitalWriteHighLL(pin) dev->out_w1ts = (1 << pin)
-#define digitalWriteLowLL(pin) dev->out_w1tc = (1 << pin)
-#define digitalReadLL(pin) ((dev->in >> pin) & 0x1)
+#define raise_eoi()         fast_gpio_set_high(EOI_PIN)
+#define raise_dav()         fast_gpio_set_high(DAV_PIN)
+#define raise_nrfd()        fast_gpio_set_high(NRFD_PIN)
+#define raise_ndac()        fast_gpio_set_high_mask(NDAC_MASK)
 
-#define setInputMask(mask) *gpio_low_enable_clear_reg = mask
-#define setOutputMask(mask) *gpio_low_enable_set_reg = mask
-#define digitalWriteHighMask(mask) *gpio_low_set_reg = mask
-#define digitalWriteLowMask(mask) *gpio_low_clear_reg = mask
+#define set_eoi_output()    fast_gpio_set_output(EOI_PIN)
+#define set_dav_output()    fast_gpio_set_output(DAV_PIN)
+#define set_nrfd_output()   fast_gpio_set_output(NRFD_PIN)
+#define set_ndac_output()   fast_gpio_set_output(NDAC_PIN)
 
-#define digitalReadMask(mask) (dev->in & mask)
+#define read_atn()          fast_gpio_get(ATN_PIN)
+#define read_eoi()          fast_gpio_get(EOI_PIN)
+#define read_dav()          fast_gpio_get(DAV_PIN)
+#define read_nrfd()         fast_gpio_get(NRFD_PIN)
+#define read_ndac()         fast_gpio_get(NDAC_PIN)
 
-#define lower_eoi()     digitalWriteLowMask(EOI_MASK)
-#define lower_dav()     digitalWriteLowMask(DAV_MASK)
-#define lower_nrfd()    digitalWriteLowMask(NRFD_MASK)
-#define lower_ndac()    digitalWriteLowMask(NDAC_MASK)
+#define set_atn_input()     fast_gpio_set_input(ATN_PIN)
+#define set_eoi_input()     fast_gpio_set_input(EOI_PIN)
+#define set_dav_input()     fast_gpio_set_input(DAV_PIN)
+#define set_nrfd_input()    fast_gpio_set_input(NRFD_PIN)
+#define set_ndac_input()    fast_gpio_set_input(NDAC_PIN)
+//#define set_ndac_input()    raise_ndac()
 
-#define raise_eoi()     digitalWriteHighMask(EOI_MASK)
-#define raise_dav()     digitalWriteHighMask(DAV_MASK)
-#define raise_nrfd()    digitalWriteHighMask(NRFD_MASK)
-#define raise_ndac()    digitalWriteHighMask(NDAC_MASK)
+#define set_datadir_output()    fast_gpio_set_output(DATADIR)
 
-#define set_eoi_output()     setOutputMask(EOI_MASK)
-#define set_dav_output()     setOutputMask(DAV_MASK)
-#define set_nrfd_output()    setOutputMask(NRFD_MASK)
-#define set_ndac_output()    setOutputMask(NDAC_MASK)
-
-#define read_atn()      digitalReadLL(ATN_PIN)
-#define read_eoi()      digitalReadLL(EOI_PIN)
-#define read_dav()      digitalReadLL(DAV_PIN)
-#define read_nrfd()     digitalReadLL(NRFD_PIN)
-#define read_ndac()     digitalReadLL(NDAC_PIN)
-
-#define set_atn_input()     setInputLL(ATN_PIN)
-#define set_eoi_input()     setInputLL(EOI_PIN)
-#define set_dav_input()     setInputLL(DAV_PIN)
-#define set_nrfd_input()    setInputLL(NRFD_PIN)
-#define set_ndac_input()    setInputLL(NDAC_PIN)
-
-#define set_datadir_output() setOutputLL(DATADIR)
-
-#define raise_datadir()     digitalWriteHighMask(DATADIR_MASK)
-#define lower_datadir()     digitalWriteLowMask(DATADIR_MASK)
-
-// NOTE: DATA1 is the only used GPIO pin > 32
-// this means the low level gpio functions can't be used since it
-// requires interaction with the second gpio register
+#define raise_datadir()     fast_gpio_set_high(DATADIR)
+#define lower_datadir()     fast_gpio_set_low(DATADIR)
 
 #ifdef CONFIG_IDF_TARGET_ESP32
+
 #define ieee_read_data_byte(recvByte) ({\
-    recvByte += digitalRead2(DATA7); recvByte <<= 1;\
-    recvByte += digitalRead2(DATA6); recvByte <<= 1;\
-    recvByte += digitalRead2(DATA5); recvByte <<= 1;\
-    recvByte += digitalRead2(DATA4); recvByte <<= 1;\
-    recvByte += digitalRead2(DATA3); recvByte <<= 1;\
-    recvByte += digitalRead2(DATA2); recvByte <<= 1;\
-    recvByte += digitalRead2(DATA1); recvByte <<= 1;\
-    recvByte += digitalRead2(DATA0);\
+    recvByte += fast_gpio_get(DATA7); recvByte <<= 1;\
+    recvByte += fast_gpio_get(DATA6); recvByte <<= 1;\
+    recvByte += fast_gpio_get(DATA5); recvByte <<= 1;\
+    recvByte += fast_gpio_get(DATA4); recvByte <<= 1;\
+    recvByte += fast_gpio_get(DATA3); recvByte <<= 1;\
+    recvByte += fast_gpio_get(DATA2); recvByte <<= 1;\
+    recvByte += fast_gpio_get_high(DATA1_HI); recvByte <<= 1;\
+    recvByte += fast_gpio_get_high(DATA0_HI);\
 })
 
 #define ieee_write_data_byte(byte) ({\
-    digitalWrite2(DATA0, byte & 0x01); byte >>= 1;\
-    digitalWrite2(DATA1, byte & 0x01); byte >>= 1;\
-    digitalWrite2(DATA2, byte & 0x01); byte >>= 1;\
-    digitalWrite2(DATA3, byte & 0x01); byte >>= 1;\
-    digitalWrite2(DATA4, byte & 0x01); byte >>= 1;\
-    digitalWrite2(DATA5, byte & 0x01); byte >>= 1;\
-    digitalWrite2(DATA6, byte & 0x01); byte >>= 1;\
-    digitalWrite2(DATA7, byte & 0x01);\
-})
-
-#define ieee_set_data_output() ({\
-    digitalWrite2(DATADIR, HIGH);\
-    setOutput(DATA0);\
-    setOutput(DATA1);\
-    setOutput(DATA2);\
-    setOutput(DATA3);\
-    setOutput(DATA4);\
-    setOutput(DATA5);\
-    setOutput(DATA6);\
-    setOutput(DATA7);\
-})
-
-#define ieee_set_data_input() ({\
-    setInput(DATA0);\
-    setInput(DATA1);\
-    setInput(DATA2);\
-    setInput(DATA3);\
-    setInput(DATA4);\
-    setInput(DATA5);\
-    setInput(DATA6);\
-    setInput(DATA7);\
-    digitalWrite2(DATADIR, LOW);\
-})
-#else
-// esp32s2
-#define ieee_read_data_byte(recvByte) ({\
-    recvByte = (uint8_t)((dev->in >> DATA0) & 0xFF);\
-})
-
-#define ieee_write_data_byte(byte) ({\
-    *gpio_low_set_reg = (uint32_t)byte << DATA0;\
-    *gpio_low_clear_reg = (uint32_t)(~byte) << DATA0;\
+    fast_gpio_write_mask(data_mask_low[byte], DATA_LOW_MASK);\
+    fast_gpio_write_mask_high(data_mask_hi[byte], DATA_HIGH_MASK);\
 })
 
 #define ieee_set_data_output() ({\
     raise_datadir();\
-    *gpio_low_enable_set_reg = DATA_MASK;\
+    fast_gpio_set_output_mask(DATA_LOW_MASK);\
+    fast_gpio_set_output_mask_high(DATA_HIGH_MASK);\
 })
 
 #define ieee_set_data_input() ({\
-    *gpio_low_enable_clear_reg = DATA_MASK;\
+    fast_gpio_set_input_mask(DATA_LOW_MASK);\
+    fast_gpio_set_input_mask_high(DATA_HIGH_MASK);\
     lower_datadir();\
 })
+
+#define read_miso() fast_gpio_get(MISO_PIN)
+
+#else
+// esp32s2
+#define ieee_read_data_byte(recvByte)   recvByte = fast_gpio_read_byte(DATA0)
+#define ieee_write_data_byte(byte)      fast_gpio_write_byte(byte, DATA0)
+
+#define ieee_set_data_output() ({\
+    raise_datadir();\
+    fast_gpio_set_output_mask(DATA_MASK);\
+})
+
+#define ieee_set_data_input() ({\
+    fast_gpio_set_input_mask(DATA_MASK);\
+    lower_datadir();\
+})
+
+#define read_miso()     fast_gpio_get_high(MISO_PIN-32)
 #endif
 
 #define enable_interrupts() portENABLE_INTERRUPTS()
@@ -243,7 +186,10 @@ extern volatile uint32_t* gpio_low_enable_clear_reg;
 #define log_d_d(format, ...) enable_interrupts(); ESP_LOGD("pd", format, ##__VA_ARGS__); disable_interrupts()
 #define log_e_d(format, ...) enable_interrupts(); ESP_LOGE("pd", format, ##__VA_ARGS__); disable_interrupts()
 
+#define get_time_us()   esp_timer_get_time()
+
 void setup_atn_interrupt();
 void wait_atn_isr();
+void clear_atn();
 
 #endif

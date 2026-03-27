@@ -18,8 +18,6 @@ void init_led();
 void set_led(bool value);
 void hDelayMs(int ms);
 
-int getMs();
-
 uint8_t bf_pgm_read_byte(uint8_t* src);
 
 void bf_eeprom_write_block(const void* block, void* eeprom, size_t n);
@@ -35,6 +33,5 @@ bool isFirmwareFile(char* fname);
 
 int32_t nvs_get_int(const char* key);
 void nvs_set_int(const char* key, int32_t val);
-
 
 #endif

@@ -53,7 +53,14 @@ const uint8_t _dirHeader[] PROGMEM =
     0x12
 };
 
+#if CONFIG_IDF_TARGET_ESP32
 const uint8_t _versionString[] PROGMEM = "\"PETDISK MAX V2.0\"      ";
+#elif CONFIG_IDF_TARGET_ESP32S2
+const uint8_t _versionString[] PROGMEM = "\"PETDISK MAX V3.0\"      ";
+#else
+// should never get here, unsupported architecture
+const uint8_t _versionString[] PROGMEM = "\"PETDISK MAX V1.0\"      ";
+#endif
 const uint8_t _firmwareString[] PROGMEM = "BUILD ";
 const uint8_t _fileExtension[] PROGMEM =
 {
@@ -72,15 +79,6 @@ const uint8_t _seqExtension[] PROGMEM =
     'Q',
     0x00,
 };
-
-void pgm_memcpy(uint8_t *dest, uint8_t *src, int len)
-{
-    int i;
-    for (i = 0; i < len; i++)
-    {
-        *dest++ = bf_pgm_read_byte(&(*src++));
-    }
-}
 
 void blink_led(int count, int ms_on, int ms_off)
 {
@@ -307,9 +305,8 @@ private:
     bool configChanged(struct pd_config* pdcfg);
     uint8_t processFilename(uint8_t* filename, uint8_t length, bool* write);
     bool processCommand(uint8_t* command);
-    void writeFile();
-    uint8_t get_device_address();
-    uint8_t wait_for_device_address();
+    bool writeFile();
+    bool get_device_address(uint8_t& address);
     openFileInfo* getFileInfoForAddress(uint8_t address);
     void resetFileInformation(uint8_t address);
     bool isD64(const char* fileName);
@@ -503,18 +500,13 @@ void PETdisk::init(
 
 void PETdisk::printConfig(struct pd_config* pdcfg)
 {
-    char tmp[128];
     for (int i = 0; i < 9; i++)
     {
-        //sprintf_P(tmp, PSTR("d %d->%d"), i, pdcfg->device_type[i]);
-        //log_is((const char*)tmp);
         log_i("d %d->%d", i, pdcfg->device_type[i]);
     }
 
     for (int i = 0; i < 4; i++)
     {
-        //sprintf_P(tmp, PSTR("u %d->"), i);
-        //log_is(tmp);
         log_i("%d: %s", i, pdcfg->urls[i]);
     }
 
@@ -715,7 +707,7 @@ DataSource* PETdisk::getDataSource(uint8_t id)
     return _dataSources[id-MIN_DEVICE_ID];
 }
 
-void PETdisk::writeFile()
+bool PETdisk::writeFile()
 {
     uint16_t numBytes;
     uint8_t rdchar;
@@ -724,7 +716,9 @@ void PETdisk::writeFile()
     numBytes = 0;
     do
     {
-        rdchar = _ieee->get_byte_from_bus();
+        if (!_ieee->get_byte_from_bus(rdchar)) {
+            return false;
+        }
         _dataSource->getBuffer()[numBytes++] = rdchar;
         
         if (numBytes >= writeBufferSize)
@@ -733,7 +727,9 @@ void PETdisk::writeFile()
             numBytes = 0;
         }
         
-        _ieee->acknowledge_bus_byte();
+        if (!_ieee->acknowledge_bus_byte()) {
+            return false;
+        }
         _ieee->signal_ready_for_data();
     }
     while (!_ieee->eoi_is_low());
@@ -759,6 +755,7 @@ void PETdisk::writeFile()
     }
 
     _dataSource->closeFile();
+    return true;
 }
 
 void PETdisk::initDirectory()
@@ -768,10 +765,10 @@ void PETdisk::initDirectory()
     _directoryEntryByteIndex = 0;
 
     // copy the directory header
-    pgm_memcpy((uint8_t *)_directoryEntry, (uint8_t *)_dirHeader, 7);
+    memcpy((uint8_t *)_directoryEntry, (uint8_t *)_dirHeader, 7);
 
     // print directory title
-    pgm_memcpy((uint8_t *)&_directoryEntry[7], (uint8_t *)_versionString, 24);
+    memcpy((uint8_t *)&_directoryEntry[7], (uint8_t *)_versionString, 24);
     _directoryEntry[31] = 0x00;
     _directoryFinished = false;
     _lastDirectoryBlock = false;
@@ -814,10 +811,10 @@ bool PETdisk::getDirectoryEntry()
             _directoryEntry[startline+3] = 0x00;
             _directoryEntry[startline+4] = 0x20;
             _directoryEntry[startline+5] = 0x20;
-            pgm_memcpy(&_directoryEntry[startline+6], (uint8_t*)_firmwareString, 6);
+            memcpy(&_directoryEntry[startline+6], (uint8_t*)_firmwareString, 6);
             
             // TODO: add git hash back
-            pgm_memcpy(&_directoryEntry[startline+6+6], (uint8_t*)_hash, 7);
+            memcpy(&_directoryEntry[startline+6+6], (uint8_t*)_hash, 7);
             _directoryEntry[startline+31] = 0x00;
             _directoryEntryIndex++;
             _directoryFinished = true;
@@ -963,58 +960,29 @@ bool PETdisk::getDirectoryEntry()
     return true;
 }
 
-uint8_t PETdisk::get_device_address()
+bool PETdisk::get_device_address(uint8_t& address)
 {
     uint8_t ieee_address;
     uint8_t buscmd;
     _dataSource = 0;
    
-    bool success = false;
-    ieee_address = _ieee->get_device_address(&buscmd, &success);
-    if (!success)
-    {
-        return 0;
+    if (!_ieee->get_device_address(&buscmd, ieee_address)) {
+        return false;
     }
-
+    
     _dataSource = getDataSource(ieee_address);
     if (_dataSource == 0)
     {
         _ieee->reject_address();
-        return 0;
+        address = 0;
+        return true;
     }
 
     _ieee->accept_address();
     _primaryAddress = ieee_address;
 
-    return buscmd;
-}
-
-uint8_t PETdisk::wait_for_device_address()
-{
-    uint8_t ieee_address;
-    uint8_t buscmd;
-    _dataSource = 0;
-    while (_dataSource == 0)
-    {
-        bool success = false;
-        ieee_address = _ieee->get_device_address(&buscmd, &success);
-        if (!success)
-        {
-            continue;
-        }
-        _dataSource = getDataSource(ieee_address);
-
-        if (_dataSource == 0)
-        {
-            _ieee->reject_address();
-            continue;
-        }
-
-        _ieee->accept_address();
-        _primaryAddress = ieee_address;
-    }
-
-    return buscmd;
+    address = buscmd;
+    return true;
 }
 
 openFileInfo* PETdisk::getFileInfoForAddress(uint8_t address)
@@ -1071,7 +1039,7 @@ bool PETdisk::isD64(const char* fileName)
 
 bool PETdisk::openFile(uint8_t* fileName)
 {
-    ESP_LOGI(TAG, "file %s", (char*)fileName);
+    //ESP_LOGI(TAG, "file %s", (char*)fileName);
     if (_dataSource->openFileForReading(fileName))
     {
         return true;
@@ -1092,7 +1060,6 @@ bool PETdisk::openFile(uint8_t* fileName)
 
 void PETdisk::loop()
 {
-    enable_interrupts();
     // start main loop
     if (_currentState == FILE_NOT_FOUND || _currentState == CLOSING)
     {
@@ -1106,12 +1073,15 @@ void PETdisk::loop()
     if (_ieee->is_unlistened())
     {
         // if we are in an unlisten state,
-        // wait for my address     
-        bool t;
-        uint8_t buscmd = get_device_address();
-        disable_interrupts();
+        // wait for my address
+        uint8_t buscmd = 0;
+        if (!get_device_address(buscmd)) {
+            return;
+        }
+        
         if (_dataSource == 0) // no datasource found
         {
+            _ieee->unlisten();
             return;
         }
 
@@ -1125,7 +1095,10 @@ void PETdisk::loop()
         }
     }
 
-    uint8_t rdchar = _ieee->get_byte_from_bus();
+    uint8_t rdchar;
+    if (!_ieee->get_byte_from_bus(rdchar)) {
+        return;
+    }
 
     if (_ieee->atn_is_low()) // check for bus command
     {
@@ -1252,7 +1225,6 @@ void PETdisk::loop()
             // this is a directory request
             if (progname[0] == '$' || (progname[0] == '@' && progname[1] == ':'))
             {
-                log_d("dir request");
                 _filenamePosition = 0;
                 _currentState = DIR_READ;
                 initDirectory();
@@ -1296,14 +1268,16 @@ void PETdisk::loop()
                 // if not a command, copy the file extension onto the end of the file name
                 if (_secondaryAddress != 15)
                 {
-                    pgm_memcpy(&progname[_filenamePosition], (uint8_t*)ext, 5);
+                    memcpy(&progname[_filenamePosition], (uint8_t*)ext, 5);
                 }
                 _filenamePosition = 0;
             }
         }
     }
 
-    _ieee->acknowledge_bus_byte();
+    if (!_ieee->acknowledge_bus_byte()) {
+        return;
+    }
 
     // === PREPARE FOR READ/WRITE
 
@@ -1317,17 +1291,15 @@ void PETdisk::loop()
         if (!_dataSource->init()) 
         {
             _fileNotFound = 1;
-            _currentState = IDLE;
         }
 
         if (_currentState == FILE_SAVE_OPENING)
         {
             // open file
             _dataSource->openFileForWriting(progname);
-            _currentState = IDLE;
         }
         else if (_currentState == FILE_READ_OPENING ||
-                    _currentState == OPEN_FNAME_READ_DONE) // file read, either LOAD or OPEN command
+                 _currentState == OPEN_FNAME_READ_DONE) // file read, either LOAD or OPEN command
         {
             // check for direct access command
             openFileInfo* of = getFileInfoForAddress(_secondaryAddress);
@@ -1363,15 +1335,14 @@ void PETdisk::loop()
                     _bufferFileIndex = _secondaryAddress;
                 }
             }
-            _currentState = IDLE;
         }
         else if (_currentState == OPEN_FNAME_READ_DONE_FOR_WRITING)
         {
             openFileInfo* of = getFileInfoForAddress(_secondaryAddress);
             strcpy(of->_fileName, (const char*)progname);
             of->_fileBufferIndex = -1;
-            _currentState = IDLE;
         }
+        _currentState = IDLE;
     }
 
     if ((rdchar == UNLISTEN) || (rdchar == UNTALK && _ieee->atn_is_low()))
@@ -1414,15 +1385,16 @@ void PETdisk::loop()
     if (_currentState == FILE_READ || _currentState == OPEN_DATA_READ)
     {
         // ==== STARTING LOAD SEQUENCE
-        _ieee->begin_output_start();
+        if (!_ieee->begin_output_start()) {
+            return;
+        }
 
         if (_currentState == FILE_READ)
         {
             // get packet
             if (progname[0] == '$' || (progname[0] == '@' && progname[1] == ':'))
             {
-                log_d("dir request");
-                _ieee->begin_output_end();
+                //log_i("dir request");
                 // reading a directory
                 // need to handle both standard load"$" command and DIRECTORY/CATALOG here
                 // on each byte sent, we should check for ATN asserted.
@@ -1433,7 +1405,15 @@ void PETdisk::loop()
                 {
                     // send one header byte
                     result = _ieee->sendIEEEByteCheckForATN2(_directoryNextByte, _lastDirectoryBlock && _directoryEntryByteIndex == 31);
+                    if (result == TIMEOUT) {
+                        return;
+                    }
+
                     IEEEBusSignal busSignal = _ieee->wait_for_ndac_high_or_atn_low();
+                    if (busSignal == TIMEOUT) {
+                        return;
+                    }
+
                     if (busSignal == ATN)
                     {
                         // ATN asserted, break out of directory listing
@@ -1505,7 +1485,11 @@ void PETdisk::loop()
 
                         _ieee->raise_dav_and_eoi();
 
-                            result = _ieee->wait_for_ndac_low_or_atn_low();
+                        result = _ieee->wait_for_ndac_low_or_atn_low();
+                        if (result == TIMEOUT) {
+                            return;
+                        }
+
                         if (result == ATN)
                         {
                             _directoryEntryByteIndex--;
@@ -1536,10 +1520,11 @@ void PETdisk::loop()
                     }
 
                     if (!output_started) {
-                        _ieee->begin_output_end();
                         output_started = true;
                     }
-                    _ieee->sendIEEEBytes(_dataSource->getBuffer(), _bytesToSend, done_sending);
+                    if (!_ieee->sendIEEEBytes(_dataSource->getBuffer(), _bytesToSend, done_sending)) {
+                        return;
+                    }
                     _bytesToSend = 0;
                 }
             }
@@ -1556,19 +1541,27 @@ void PETdisk::loop()
                 // read from address 15 is the drive status
                 of->_nextByte = '\r';
             }
-            _ieee->begin_output_end();
             while (!done)
             {
                 if (of->_useRemainderByte == true)
                 {
                     result = _ieee->sendIEEEByteCheckForATN(of->_remainderByte);
+                    if (result == TIMEOUT) {
+                        return;
+                    }
                 }
                 else
                 {
                     result = _ieee->sendIEEEByteCheckForATN(of->_nextByte);
+                    if (result == TIMEOUT) {
+                        return;
+                    }
                 }
 
                 result = _ieee->wait_for_ndac_high_or_atn_low();
+                if (result == TIMEOUT) {
+                    return;
+                }
 
                 if (result == ATN)
                 {
@@ -1610,6 +1603,9 @@ void PETdisk::loop()
                     _ieee->raise_dav_and_eoi();
 
                     result = _ieee->wait_for_ndac_low_or_atn_low();
+                    if (result == TIMEOUT) {
+                        return;
+                    }
                     
                     if (result == ATN)
                     {
@@ -1638,7 +1634,9 @@ void PETdisk::loop()
     else if (_currentState == FILE_SAVE)
     {
         // save command
-        writeFile();
+        if (!writeFile()) {
+            return;
+        }
         _ieee->unlisten();
         _currentState = IDLE;
     }
@@ -1766,7 +1764,6 @@ SD _sd;
 bitfixer::FAT32 _fat32;
 bitfixer::EspConn _espConn;
 bitfixer::EspHttp _espHttp;
-bitfixer::IEEE488 _ieee;
 D64DataSource _d64DataSource;
 PETdisk _petdisk;
 
@@ -1802,12 +1799,14 @@ void setup()
     _spi.init();
     _sd.initWithSPI(&_spi, spi_cs());
     _fat32.initWithParams(&_sd, _buffer, &_buffer[512]);
+
+    bitfixer::IEEE488* ieee = bitfixer::IEEE488::get_instance();
     
     if (checkForDisable((char*)&_buffer[769], &_fat32))
     {
         log_i("DISABLE.PD found, disabling device\n");
-        _ieee.init();
-        _ieee.unlisten();
+        ieee->init();
+        ieee->unlisten();
         init_led();
         while(1) {
             blink_led(4, 500, 500);
@@ -1822,8 +1821,8 @@ void setup()
     _espConn.initWithParams(_buffer, &_bufferSize);
     _espHttp.initWithParams(&_espConn);
 
-    _ieee.init();
-    _ieee.unlisten();
+    ieee->init();
+    ieee->unlisten();
     
     nds0.initWithParams(&_espHttp, _buffer, &_bufferSize);
     nds1.initWithParams(&_espHttp, _buffer, &_bufferSize);
@@ -1844,7 +1843,7 @@ void setup()
         &_espConn, 
         &_espHttp, 
         (bitfixer::NetworkDataSource**)nds_array,
-        &_ieee);
+        ieee);
 
     // run diagnostics if needed
     // TODO: check if DIAG.PD2 exists
@@ -1864,24 +1863,17 @@ TaskHandle_t loopTaskHandle = NULL;
 void loopTask(void *pvParameters)
 {
     setup();
-    disable_interrupts();
     for(;;) {
         loop();
     }
 }
 
-//#define TESTMODE 1
-
 extern "C" void app_main() {
     esp_log_level_set("pd", ESP_LOG_INFO);
     gpio_init();
     // select between test mode and run mode
-#ifdef TESTMODE
     Console::init();
     hardware_cmd_init();
-    ESP_LOGI("main", "entering test mode");
-#else
+    xTaskCreatePinnedToCore(loopTask, "loopTask", 4096, NULL, 20, &loopTaskHandle, 0);
     setup_atn_interrupt();
-    xTaskCreate(loopTask, "loopTask", 4096, NULL, 24, &loopTaskHandle);
-#endif
 }

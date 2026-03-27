@@ -37,7 +37,8 @@ typedef enum {
     NDAC = 0x02,
     DAV = 0x04,
     NRFD = 0x08,
-    EOI = 0x10
+    EOI = 0x10,
+    TIMEOUT = 0xFF
 } IEEEBusSignal;
 
 namespace bitfixer {
@@ -53,20 +54,18 @@ public:
     ~IEEE488() {}
 
     void init();
-    void sendIEEEBytes(uint8_t *entry, int size, uint8_t isLast);
+    bool sendIEEEBytes(uint8_t *entry, int size, uint8_t isLast);
     uint8_t sendIEEEByteCheckForATN(uint8_t byte);
     uint8_t sendIEEEByteCheckForATN2(uint8_t byte, bool last);
     void unlisten();
     bool is_unlistened();
-    void begin_output();
 
-    void begin_output_start();
-    void begin_output_end();
+    bool begin_output_start();
 
     void end_output();
 
-    uint8_t get_byte_from_bus();
-    void acknowledge_bus_byte();
+    bool get_byte_from_bus(uint8_t& rdchar);
+    bool acknowledge_bus_byte();
     bool atn_is_low();
     bool eoi_is_low();
     void signal_ready_for_data();
@@ -74,36 +73,31 @@ public:
     void raise_dav_and_eoi();
     uint8_t wait_for_ndac_low_or_atn_low();
     IEEEBusSignal wait_for_ndac_high_or_atn_low();
-    uint8_t wait_for_nrfd_high_or_atn_low();
-    bool is_atn_asserted();
-    void wait_for_atn_low();
-    void wait_for_dav_low();
-    bool wait_for_atn_low_with_timeout(int timeoutMs);
-    bool wait_for_dav_low_with_timeout(int timeoutMs);
+
+    bool wait_for_dav_low(int timeout_us);
     void recv_byte(uint8_t *byte);
 
-    uint8_t get_device_address(uint8_t* dir, bool* success);
+    bool get_device_address(uint8_t* dir, uint8_t& primary_address);
     void accept_address();
     void reject_address();
 
-    void set_data_output();
-    void set_data_input();
-
     void write_byte_to_data_bus(uint8_t byte);
+
+    static IEEE488* get_instance();
 private:
     bool _atn_low;
     bool _eoi_low;
 
     bool _unlistened;
 
-    void wait_for_atn_high();
-    void wait_for_dav_high();
+    bool wait_for_atn_high(int timeout_us);
+    bool wait_for_dav_high(int timeout_us);
 
-    void wait_for_nrfd_high();
-    void wait_for_nrfd_low();
-    void wait_for_ndac_high();
-    void wait_for_ndac_low();
-    void send_byte(uint8_t byte, int last);
+    uint8_t wait_for_nrfd_high_or_atn_low();
+    bool wait_for_nrfd_high();
+    bool wait_for_ndac_high();
+    bool wait_for_ndac_low();
+    bool send_byte(uint8_t byte, int last);
 
 };
 

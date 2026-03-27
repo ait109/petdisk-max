@@ -29,90 +29,94 @@
 
 namespace bitfixer {
 
+static constexpr const int PIN_TIMEOUT_US = 200000;
+static IEEE488 _ieee;
+
 void IEEE488::init() {
     set_datadir_output();
     set_atn_input();
-    set_data_input();
+    ieee_set_data_input();
 }
 
-void IEEE488::wait_for_dav_high()
-{
-   while (read_dav() == 0) {}
+IEEE488* IEEE488::get_instance() {
+    return &_ieee;
 }
 
-void IEEE488::wait_for_dav_low()
+bool IEEE488::wait_for_dav_high(int timeout_us)
 {
-   while (read_dav() != 0) {}
+    int64_t time_start_us = get_time_us();
+    while (read_dav() == 0) {
+        if (timeout_us < (get_time_us()-time_start_us)) {
+            unlisten();
+            return false;
+        }
+    }
+    return true;
 }
 
-bool IEEE488::wait_for_dav_low_with_timeout(int timeoutMs)
+bool IEEE488::wait_for_dav_low(int timeout_us)
 {
-    int msStart = getMs();
+    int64_t time_start_us = get_time_us();
     while (read_dav() != 0) {
-        if ((getMs() - msStart) > timeoutMs) {
+        if (timeout_us < (get_time_us()-time_start_us)) {
+            unlisten();
             return false;
         }
     }
-
     return true;
 }
 
-void IEEE488::wait_for_atn_high()
+bool IEEE488::wait_for_atn_high(int timeout_us)
 {
-   while (read_atn() == 0) {}
-}
-
-bool IEEE488::is_atn_asserted()
-{
-   if (read_atn() == 0)
-   {
-       return true;
-   }
-
-   return false;
-}
-
-void IEEE488::wait_for_atn_low()
-{
-    while (read_atn() != 0) {}
-}
-
-bool IEEE488::wait_for_atn_low_with_timeout(int timeoutMs)
-{
-    int msStart = getMs();
-    while (read_atn() != 0) {
-        int m = getMs();
-        if ((m - msStart) > timeoutMs) {
+    int64_t start_time_us = get_time_us();
+    while (read_atn() == 0) {
+        if ((get_time_us() - start_time_us) > timeout_us) {
+            unlisten();
             return false;
         }
     }
-
     return true;
 }
 
-
-void IEEE488::wait_for_nrfd_high()
+bool IEEE488::wait_for_nrfd_high()
 {
-   while (read_nrfd() == 0) {}
+    int64_t start_time_us = get_time_us();
+    while (read_nrfd() == 0) {
+        if ((get_time_us() - start_time_us) > PIN_TIMEOUT_US) {
+            unlisten();
+            return false;
+        }
+    }
+    return true;
 }
 
-void IEEE488::wait_for_nrfd_low()
+bool IEEE488::wait_for_ndac_high()
 {
-    while (read_nrfd() != 0) {}
+    int64_t start_time_us = get_time_us();
+    while (read_ndac() == 0) {
+        if ((get_time_us() - start_time_us) > PIN_TIMEOUT_US) {
+            unlisten();
+            return false;
+        }
+    }
+    return true;
 }
 
-void IEEE488::wait_for_ndac_high()
+bool IEEE488::wait_for_ndac_low()
 {
-   while (read_ndac() == 0) {}
-}
-
-void IEEE488::wait_for_ndac_low()
-{
-   while (read_ndac() != 0) {}
+    int64_t start_time_us = get_time_us();
+    while (read_ndac() != 0) {
+        if ((get_time_us() - start_time_us) > PIN_TIMEOUT_US) {
+            unlisten();
+            return false;
+        }
+    }
+    return true;
 }
 
 uint8_t IEEE488::wait_for_ndac_low_or_atn_low()
 {
+    int64_t start_time_us = get_time_us();
     while (1) 
     {
         if (read_atn() == 0)
@@ -123,11 +127,16 @@ uint8_t IEEE488::wait_for_ndac_low_or_atn_low()
         {
             return IEEEBusSignal::NDAC;
         }
+        if ((get_time_us() - start_time_us) > PIN_TIMEOUT_US) {
+            unlisten();
+            return TIMEOUT;
+        }
     }
 }
 
 IEEEBusSignal IEEE488::wait_for_ndac_high_or_atn_low()
 {
+    int64_t start_time_us = get_time_us();
     while (1)
     {
         if (read_atn() == 0)
@@ -138,22 +147,31 @@ IEEEBusSignal IEEE488::wait_for_ndac_high_or_atn_low()
         {
             return IEEEBusSignal::NDAC;
         }
+        if ((get_time_us() - start_time_us) > PIN_TIMEOUT_US) {
+            unlisten();
+            return TIMEOUT;
+        }
     }
 }
 
 uint8_t IEEE488::wait_for_nrfd_high_or_atn_low()
 {
-   while (1)
-   {
-       if (read_atn() == 0)
-       {
-           return IEEEBusSignal::ATN;
-       }
-       else if (read_nrfd() != 0)
-       {
-           return IEEEBusSignal::NRFD;
-       }
-   }
+    int64_t start_time_us = get_time_us();
+    while (1)
+    {
+        if (read_atn() == 0)
+        {
+            return IEEEBusSignal::ATN;
+        }
+        else if (read_nrfd() != 0)
+        {
+            return IEEEBusSignal::NRFD;
+        }
+        if ((get_time_us() - start_time_us) > PIN_TIMEOUT_US) {
+            unlisten();
+            return TIMEOUT;
+        }
+    }
 }
 
 void IEEE488::signal_ready_for_data()
@@ -177,10 +195,12 @@ void IEEE488::write_byte_to_data_bus(uint8_t byte)
     ieee_write_data_byte(byte);
 }
 
-void IEEE488::send_byte(uint8_t byte, int last)
+bool IEEE488::send_byte(uint8_t byte, int last)
 {
     write_byte_to_data_bus(byte);
-    wait_for_nrfd_high();
+    if (!wait_for_nrfd_high()) {
+        return false;
+    }
 
     if (last != 0)
     {
@@ -189,10 +209,13 @@ void IEEE488::send_byte(uint8_t byte, int last)
     lower_dav();
 
     // wait for NDAC high
-    wait_for_ndac_high();
+    if (!wait_for_ndac_high()) {
+        return false;
+    }
 
     // raise DAV and EOI
     raise_dav_and_eoi();
+    return true;
 }
 
 void IEEE488::raise_dav_and_eoi()
@@ -204,7 +227,7 @@ void IEEE488::raise_dav_and_eoi()
 
 void IEEE488::unlisten()
 {
-    set_data_input();
+    ieee_set_data_input();
 
     // all bus lines input
     set_atn_input();
@@ -214,6 +237,7 @@ void IEEE488::unlisten()
     set_eoi_input();
 
     _unlistened = true;
+    clear_atn();
 }
 
 bool IEEE488::is_unlistened()
@@ -221,18 +245,15 @@ bool IEEE488::is_unlistened()
     return _unlistened;
 }
 
-uint8_t IEEE488::get_device_address(uint8_t* dir, bool* success)
+bool IEEE488::get_device_address(uint8_t* dir, uint8_t& primary_address)
 {
-    *success = false;
-    uint8_t primary_address;
     // wait for atn signal
-    //wait_for_atn_low();
     wait_atn_isr();
     
     // lower NDAC to respond
-    set_ndac_output();
-    lower_ndac();
-    wait_for_dav_low();
+    if (!wait_for_dav_low(PIN_TIMEOUT_US)) {
+        return false;
+    }
 
     // read data
     recv_byte(&primary_address);
@@ -246,9 +267,7 @@ uint8_t IEEE488::get_device_address(uint8_t* dir, bool* success)
     
     *dir = primary_address & 0xF0;
     primary_address = primary_address & 0x0F;
-    
-    *success = true;
-    return primary_address;
+    return true;
 }
 
 void IEEE488::accept_address()
@@ -256,7 +275,7 @@ void IEEE488::accept_address()
     // raise NDAC
     raise_ndac();
     // wait for data to finish
-    wait_for_dav_high();
+    wait_for_dav_high(PIN_TIMEOUT_US);
     
     // release control and handle transaction
     raise_nrfd();
@@ -270,71 +289,29 @@ void IEEE488::reject_address()
     // unlisten the bus
     unlisten();
     // wait for atn to release
-    wait_for_atn_high();
+    wait_for_atn_high(PIN_TIMEOUT_US);
 }
 
-void IEEE488::set_data_output()
+bool IEEE488::begin_output_start()
 {
-    // set all data lines to output
+    set_nrfd_input();
+    if (!wait_for_atn_high(PIN_TIMEOUT_US)) {
+        return false;
+    }
+
+    set_ndac_input();
+    set_dav_output();
+    set_eoi_output();
+
+    raise_dav();
+    raise_eoi();
+
     ieee_set_data_output();
-}
 
-void IEEE488::set_data_input()
-{
-    ieee_set_data_input();
-}
-
-// configure IEEE bus to begin sending bytes
-void IEEE488::begin_output()
-{
-    set_nrfd_input();
-    wait_for_atn_high();
-
-    set_ndac_input();
-    set_dav_output();
-    set_eoi_output();
-
-    raise_dav();
-    raise_eoi();
-
-    set_data_output();
-
-    wait_for_ndac_low();
-}
-
-void IEEE488::begin_output_start()
-{
-    /*
-    set_nrfd_input();
-    wait_for_atn_high();
-    set_ndac_input();
-    set_dav_output();
-    set_eoi_output();
-    */
-
-    set_nrfd_input();
-    wait_for_atn_high();
-
-    set_ndac_input();
-    set_dav_output();
-    set_eoi_output();
-
-    raise_dav();
-    raise_eoi();
-
-    set_data_output();
-
-    wait_for_ndac_low();
-}
-
-void IEEE488::begin_output_end()
-{
-    /*
-    raise_dav();
-    raise_eoi();
-    set_data_output();
-    wait_for_ndac_low();
-    */
+    if (!wait_for_ndac_low()) {
+        return false;
+    }
+    return true;
 }
 
 void IEEE488::end_output()
@@ -348,7 +325,7 @@ void IEEE488::end_output()
     set_nrfd_output();
     raise_nrfd();
 
-    set_data_input();
+    ieee_set_data_input();
 }
 
 uint8_t IEEE488::sendIEEEByteCheckForATN(uint8_t byte)
@@ -358,14 +335,14 @@ uint8_t IEEE488::sendIEEEByteCheckForATN(uint8_t byte)
     write_byte_to_data_bus(byte);
     
     result = wait_for_ndac_low_or_atn_low();
-    if (result == ATN)
+    if (result == TIMEOUT || result == ATN)
     {
         return result;
     }
 
     // wait for NRFD high
     result = wait_for_nrfd_high_or_atn_low();
-    if (result == ATN)
+    if (result == TIMEOUT || result == ATN)
     {
         return result;
     }
@@ -379,14 +356,14 @@ uint8_t IEEE488::sendIEEEByteCheckForATN2(uint8_t byte, bool last)
     uint8_t result = 0;
     
     result = wait_for_ndac_low_or_atn_low();
-    if (result == ATN)
+    if (result == TIMEOUT || result == ATN)
     {
         return result;
     }
 
     // wait for NRFD high
     result = wait_for_nrfd_high_or_atn_low();
-    if (result == ATN)
+    if (result == TIMEOUT || result == ATN)
     {
         return result;
     }
@@ -404,7 +381,7 @@ uint8_t IEEE488::sendIEEEByteCheckForATN2(uint8_t byte, bool last)
     return 0;
 }
 
-void IEEE488::sendIEEEBytes(uint8_t *entry, int size, uint8_t isLast)
+bool IEEE488::sendIEEEBytes(uint8_t *entry, int size, uint8_t isLast)
 {
     int i;
     int last = size;
@@ -416,13 +393,18 @@ void IEEE488::sendIEEEBytes(uint8_t *entry, int size, uint8_t isLast)
     
     for (i = 0; i < last; i++)
     {
-        send_byte(entry[i], 0);
+        if (!send_byte(entry[i], 0)) {
+            return false;
+        }
     }
     
     if (isLast)
     {
-        send_byte(entry[i], 1);
+        if (!send_byte(entry[i], 1)) {
+            return false;
+        }
     }
+    return true;
 }
 
 bool IEEE488::atn_is_low()
@@ -435,10 +417,11 @@ bool IEEE488::eoi_is_low()
     return _eoi_low;
 }
 
-uint8_t IEEE488::get_byte_from_bus()
+bool IEEE488::get_byte_from_bus(uint8_t& rdchar)
 {
-    uint8_t rdchar;
-    wait_for_dav_low();
+    if (!wait_for_dav_low(PIN_TIMEOUT_US)) {
+        return false;
+    }
     // lower NDAC and NRFD
     lower_ndac();
     lower_nrfd();
@@ -450,14 +433,17 @@ uint8_t IEEE488::get_byte_from_bus()
     _atn_low = (atnval == 0) ? true : false;
     _eoi_low = (eoival == 0) ? true : false;
 
-    return rdchar;
+    return true;
 }
 
-void IEEE488::acknowledge_bus_byte()
+bool IEEE488::acknowledge_bus_byte()
 {
     lower_nrfd();
     raise_ndac();
-    wait_for_dav_high();
+    if (!wait_for_dav_high(PIN_TIMEOUT_US)) {
+        return false;
+    }
+    return true;
 }
 
 }
